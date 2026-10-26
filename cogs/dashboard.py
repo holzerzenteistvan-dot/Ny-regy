@@ -230,7 +230,7 @@ class Dashboard(RPWeb, commands.Cog):
         ])
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-       host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+        host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
 # Itt először a Render PORT változóját keressük, és CSAK ha az nincs, akkor esünk vissza a 8080-ra:
         port_str = os.getenv("PORT") or os.getenv("DASHBOARD_PORT") or "8080"
         port = int(port_str)
