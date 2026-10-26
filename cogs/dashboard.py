@@ -230,7 +230,8 @@ class Dashboard(RPWeb, commands.Cog):
         ])
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        host, port = os.getenv("DASHBOARD_HOST", "127.0.0.1"), int(os.getenv("DASHBOARD_PORT", "8080"))
+       host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+        port = int(os.getenv("PORT") or os.getenv("DASHBOARD_PORT", "8080"))
         await web.TCPSite(self.runner, host, port).start()
         log.info("A dashboard elindult: %s (helyi cím: %s:%s)", self.url, host, port)
 
