@@ -914,7 +914,7 @@ class Dashboard(RPWeb, commands.Cog):
         szint_kartya = kartya("Tagszám → ping", f"{szint_tabla}{hely}{szint_uj}",
                               "A bot a partnerszerver tagszáma alapján a legmagasabb elért szint pingjét javasolja. Ugyanazzal a tagszámmal újra mentve felülíródik.")
         sorok = await db.fetchall("SELECT * FROM partnersegek WHERE guild_id=? AND statusz!='szoveg' ORDER BY id DESC LIMIT 50", (g.id,))
-        allapot = {"ajanlat": ("ping-javaslat", ""), "kep": ("bizonyítékra vár", ""), "manager": ("manager döntésére vár", "sarga"),
+        allapot = {"adatok": ("adatokra vár", ""), "ajanlat": ("ping-javaslat", ""), "kep": ("bizonyítékra vár", ""), "manager": ("manager döntésére vár", "sarga"),
                    "elfogadva": ("elfogadva", "zold"), "elutasitva": ("elutasítva", "piros"), "megszakitva": ("megszakadt", "")}
         lista = tabla(["Szerver", "Tagok", "Ping", "Állapot", "Jóváhagyta/elutasította", "Dátum"], [[
             x["partner_nev"] or "–", tagszam_szoveg(x["tagszam"] or 0), ping_cimke(g, x["ping"]),

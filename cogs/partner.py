@@ -2,8 +2,8 @@
 
 Menet:
  1. A "Partnerség" típusú ticket megnyílásakor a bot elkéri a másik szerver partnerszövegét.
- 2. Ellenőrzi a meghívót (érvényes, soha nem jár le), kiolvassa a tagszámot, és megnézi, hogy az elmúlt
-    UJRA_HONAP hónapban volt-e már partnerség ezzel a szerverrel.
+ 2. Ellenőrzi, hogy pontosan egy meghívó van a szövegben, majd egy űrlapon bekéri a szerver nevét és tagszámát
+    (a Discord felé nem kérdez le semmit), és megnézi, hogy az elmúlt UJRA_HONAP hónapban volt-e már partnerség ezzel a szerverrel.
  3. A tagszám alapján ping-et javasol (a tagszám → ping szinteket az admin állítja be). A kérelmező elfogadhatja vagy elutasíthatja.
  4. Elfogadás után a bot kiküldi a saját partnerszövegünket; a kérelmező kiteszi, majd képernyőképet küld bizonyítéknak.
  5. A Partner Manager rangot a bot értesíti; a manager elfogadhatja, elutasíthatja vagy üzenhet a ticketben.
@@ -26,13 +26,14 @@ log = logging.getLogger("dcbot.partner")
 
 ALAP_KULCS = "partnerseg"  # a partnerségi ticket-típus alapértelmezett kulcsa (a "Partnerség" névből ez lesz)
 UJRA_HONAP = 3  # ennyi hónapig nem köthető újra partnerség ugyanazzal a szerverrel
-NYITOTT = ("szoveg", "ajanlat", "kep", "manager")
+NYITOTT = ("szoveg", "adatok", "ajanlat", "kep", "manager")
 MAX_SZOVEG = 1900  # a saját partnerszövegünk üzenetként megy ki, ezért 2000 alatt kell maradnia
 
 MEGHIVO_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/([A-Za-z0-9-]{2,32})", re.IGNORECASE)
 PING_VALASZTEK = [("Nincs ping", "nincs"), ("@everyone", "everyone"), ("@here", "here"), ("Egy rang pingelése", "rang")]
 
 GOMBOK = {
+    "adatok": ("Adatok megadása", "📝", discord.ButtonStyle.primary),
     "ajanl_el": ("Elfogadom", "✅", discord.ButtonStyle.success),
     "ajanl_ut": ("Nem kérem a pinget", "❌", discord.ButtonStyle.danger),
     "folytat": ("Folytatás", "▶️", discord.ButtonStyle.primary),
@@ -76,14 +77,6 @@ def ping_cimke(g: discord.Guild, ping: str) -> str:
     return "nincs ping"
 
 
-class MeghivoHiba(Exception):
-    """A meghívó nem megfelelő (a szöveg közvetlenül megjeleníthető). atmeneti: csak Discord-hiba miatt nem sikerült."""
-
-    def __init__(self, uzenet: str, atmeneti: bool = False):
-        super().__init__(uzenet)
-        self.atmeneti = atmeneti
-
-
 def nezet(azon: int, *akciok: str) -> discord.ui.View:
     v = discord.ui.View(timeout=None)
     for akcio in akciok:
@@ -106,6 +99,18 @@ class PartnerGomb(discord.ui.DynamicItem[discord.ui.Button], template=r"partner:
 
     async def callback(self, i: discord.Interaction):
         await i.client.get_cog("Partner").gomb(i, self.akcio, self.azon)
+
+
+class AdatokModal(discord.ui.Modal, title="A partnerszerver adatai"):
+    nev = discord.ui.TextInput(label="A szerver neve", max_length=100)
+    tagok = discord.ui.TextInput(label="Tagok száma", max_length=9, placeholder="Pl. 250")
+
+    def __init__(self, azon: int):
+        super().__init__()
+        self.azon = azon
+
+    async def on_submit(self, i: discord.Interaction):
+        await i.client.get_cog("Partner").adatok(i, self.azon, str(self.nev).strip(), str(self.tagok))
 
 
 class ElutasitModal(discord.ui.Modal, title="Partnerség elutasítása"):
@@ -154,7 +159,7 @@ class Partner(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_dynamic_items(PartnerGomb)
-        sorok = await self.bot.db.fetchall("SELECT csatorna_id FROM partnersegek WHERE statusz IN ('szoveg','ajanlat','kep','manager')")
+        sorok = await self.bot.db.fetchall("SELECT csatorna_id FROM partnersegek WHERE statusz IN ('szoveg','adatok','ajanlat','kep','manager')")
         self._aktiv = {s["csatorna_id"] for s in sorok}
 
     def zar(self, azon: int) -> asyncio.Lock:
@@ -202,58 +207,33 @@ class Partner(commands.Cog):
             description=(
                 "Köszönjük az érdeklődést! Első lépésként **másold be ide a saját szervered partnerszövegét** egyetlen üzenetben.\n\n"
                 "• A szövegben pontosan **egy** Discord-meghívó legyen.\n"
-                "• A meghívó **soha ne járjon le** (létrehozáskor a lejárat: *Soha*).\n"
+                "• A meghívó legyen **soha le nem járó** (létrehozáskor a lejárat: *Soha*). Ezt a Partner Manager ellenőrzi.\n"
                 f"• Ugyanazzal a szerverrel **{UJRA_HONAP} hónapon belül** nem köthető új partnerség.\n\n"
-                "A bot ellenőrzi a meghívót és a tagszámot, majd javasol egy pinget."),
+                "Ezután megadod a szerver nevét és tagszámát, a bot pedig javasol egy pinget."),
             color=KEK)
         await csatorna.send(embed=e)
         log.info("Partnerségi ticket indult: %s (#%s)", csatorna.name, azon)
 
     # ------------------------------------------------------------------ meghívó és előzmények
-    async def meghivo_ellenorzes(self, kod: str, g: discord.Guild) -> discord.Invite:
-        """Érvényes-e a meghívó, soha nem jár-e le, és kiolvasható-e a tagszám. Hibánál MeghivoHiba."""
-        inv = None
-        for kiserlet in range(2):  # átmeneti hibánál (429, 5xx) egyszer újrapróbáljuk
-            try:
-                inv = await self.bot.fetch_invite(kod, with_counts=True, with_expiration=True)
-                break
-            except discord.NotFound:
-                raise MeghivoHiba("Ez a meghívó érvénytelen vagy már lejárt. Hozz létre egy újat, és küldd be újra a szöveget.")
-            except discord.HTTPException as hiba:
-                log.warning("A meghívó ellenőrzése nem sikerült: kód=%s státusz=%s discord-hibakód=%s szöveg=%s",
-                            kod, hiba.status, hiba.code, hiba.text[:200])
-                if kiserlet == 0 and (hiba.status == 429 or hiba.status >= 500):
-                    await asyncio.sleep(2)
-                    continue
-                raise MeghivoHiba(
-                    f"A meghívót most nem sikerült ellenőrizni (Discord-hiba: {hiba.status}"
-                    f"{f'/{hiba.code}' if hiba.code else ''}). Próbáld újra egy perc múlva, ha marad a hiba, szólj egy staff tagnak.", atmeneti=True)
-        if inv.guild is None:
-            raise MeghivoHiba("Ez a meghívó nem egy szerverre mutat.")
-        if inv.guild.id == g.id:
-            raise MeghivoHiba("Ez a saját szerverünk meghívója. A partnerszerver meghívóját add meg.")
-        if inv.expires_at is not None:
-            raise MeghivoHiba(
-                f"Ez a meghívó lejár (<t:{int(inv.expires_at.timestamp())}:R>). Hozz létre egy olyat, ahol a lejárat **soha**, "
-                "és küldd be újra a szöveget.")
-        if inv.approximate_member_count is None:
-            raise MeghivoHiba("Ebből a meghívóból nem olvasható ki a szerver tagszáma. Hozz létre egy új meghívót, és próbáld újra.", atmeneti=True)
-        return inv
+    async def uj_partnerseg_tiltas(self, g: discord.Guild, kod: str, nev: str | None, sajat_id: int) -> str | None:
+        """Ha nem köthető partnerség a szerverrel, az ok szövege; különben None.
 
-    async def uj_partnerseg_tiltas(self, g: discord.Guild, partner_id: int, sajat_id: int) -> str | None:
-        """Ha nem köthető partnerség a szerverrel, a ok szövege; különben None."""
+        A szervert a meghívókód és (ha már megvan) a név alapján ismerjük fel, mert a Discordtól nem kérdezünk le semmit.
+        """
         db = self.bot.db
+        egyezes = "(LOWER(invite_kod)=LOWER(?)" + (" OR LOWER(partner_nev)=LOWER(?))" if nev else ")")
+        arg = (kod, nev) if nev else (kod,)
         hatar = int(honap_eltolas(most(), -UJRA_HONAP).timestamp())
         utolso = await db.fetchone(
-            "SELECT dontes_ido FROM partnersegek WHERE guild_id=? AND partner_guild_id=? AND statusz='elfogadva' "
-            "AND dontes_ido>=? AND id!=? ORDER BY dontes_ido DESC LIMIT 1", (g.id, partner_id, hatar, sajat_id))
+            f"SELECT dontes_ido FROM partnersegek WHERE guild_id=? AND statusz='elfogadva' AND dontes_ido>=? AND id!=? AND {egyezes} "
+            "ORDER BY dontes_ido DESC LIMIT 1", (g.id, hatar, sajat_id, *arg))
         if utolso:
             ujra = honap_eltolas(datetime.fromtimestamp(utolso["dontes_ido"], timezone.utc), UJRA_HONAP)
             return (f"Ezzel a szerverrel az elmúlt {UJRA_HONAP} hónapban már volt partnerségünk (<t:{utolso['dontes_ido']}:D>). "
                     f"Új partnerség legkorábban <t:{int(ujra.timestamp())}:D> után köthető.")
         folyamatban = await db.fetchall(
-            "SELECT csatorna_id FROM partnersegek WHERE guild_id=? AND partner_guild_id=? "
-            "AND statusz IN ('ajanlat','kep','manager') AND id!=?", (g.id, partner_id, sajat_id))
+            f"SELECT csatorna_id FROM partnersegek WHERE guild_id=? AND statusz IN ('adatok','ajanlat','kep','manager') AND id!=? AND {egyezes}",
+            (g.id, sajat_id, *arg))
         for sor in folyamatban:
             if g.get_channel(sor["csatorna_id"]):
                 return f"Ezzel a szerverrel már van folyamatban lévő partnerségi kérelem: <#{sor['csatorna_id']}>."
@@ -275,7 +255,7 @@ class Partner(commands.Cog):
             return
         async with self.zar(sor["id"]):
             sor = await self.sor(sor["id"])  # a zár alatt újra beolvassuk: közben változhatott
-            if sor["statusz"] == "szoveg":
+            if sor["statusz"] in ("szoveg", "adatok"):
                 await self.szoveg_feldolgoz(uzenet, sor)
             elif sor["statusz"] in ("kep", "manager"):
                 await self.kep_feldolgoz(uzenet, sor)
@@ -285,49 +265,63 @@ class Partner(commands.Cog):
         """A ticket lezárásakor (a csatorna törlésekor) a félbemaradt kérelem megszakadtnak számít."""
         if csatorna.id in self._aktiv:
             await self.bot.db.execute(
-                "UPDATE partnersegek SET statusz='megszakitva' WHERE csatorna_id=? AND statusz IN ('szoveg','ajanlat','kep','manager')",
+                "UPDATE partnersegek SET statusz='megszakitva' WHERE csatorna_id=? AND statusz IN ('szoveg','adatok','ajanlat','kep','manager')",
                 (csatorna.id,))
             self._aktiv.discard(csatorna.id)
 
     # ------------------------------------------------------------------ 2. lépés: a másik szerver szövege
     async def szoveg_feldolgoz(self, uzenet: discord.Message, sor) -> None:
-        g, db = uzenet.guild, self.bot.db
         szoveg = uzenet.content.strip()
         if not szoveg:
             return await uzenet.reply("❌ A partnerszöveget szövegként másold be az üzenetbe.", mention_author=False)
         kodok = meghivo_kodok(szoveg)
         if not kodok:
-            return await uzenet.reply("❌ Nem találtam Discord-meghívót a szövegben. Tegyél bele egy soha le nem járó meghívót, és küldd be újra.", mention_author=False)
+            return await uzenet.reply("❌ Nem találtam Discord-meghívót a szövegben. Tegyél bele egy meghívót, és küldd be újra.", mention_author=False)
         if len(kodok) > 1:
             return await uzenet.reply("❌ Több különböző meghívó van a szövegben. Hagyd benne csak a szervered meghívóját, és küldd be újra.", mention_author=False)
-        try:
-            inv = await self.meghivo_ellenorzes(kodok[0], g)
-        except MeghivoHiba as hiba:
-            return await uzenet.reply(f"❌ {hiba}", mention_author=False)
-        if tiltas := await self.uj_partnerseg_tiltas(g, inv.guild.id, sor["id"]):
+        if tiltas := await self.uj_partnerseg_tiltas(uzenet.guild, kodok[0], None, sor["id"]):
             return await uzenet.reply(f"❌ {tiltas}", mention_author=False)
+        await self.bot.db.execute(
+            "UPDATE partnersegek SET statusz='adatok', partner_szoveg=?, invite_kod=? WHERE id=?", (szoveg, kodok[0], sor["id"]))
+        e = discord.Embed(
+            title="📝 Még két adat kell",
+            description="A szöveget megkaptam. Kattints a gombra, és add meg a szerver **nevét** és a **tagszámát**.\n"
+                        "Ha hibás szöveget küldtél, egyszerűen küldd be újra.", color=KEK)
+        await uzenet.channel.send(f"<@{sor['user_id']}>", embed=e, view=nezet(sor["id"], "adatok"),
+                                  allowed_mentions=discord.AllowedMentions(users=True))
 
-        tagszam = inv.approximate_member_count
-        ajanlott = await self.javasolt_ping(g.id, tagszam)
-        await db.execute(
-            "UPDATE partnersegek SET statusz='ajanlat', partner_guild_id=?, partner_nev=?, partner_szoveg=?, invite_kod=?, tagszam=?, ping=? WHERE id=?",
-            (inv.guild.id, inv.guild.name[:100], szoveg, kodok[0], tagszam, ajanlott, sor["id"]))
-
+    async def adatok(self, i: discord.Interaction, azon: int, nev: str, tagok: str) -> None:
+        """Az űrlap beküldése: név és tagszám megadva, jöhet a ping-javaslat."""
+        g, db = i.guild, self.bot.db
+        sor = await self.sor(azon)
+        if not sor or sor["guild_id"] != g.id or i.user.id != sor["user_id"]:
+            return await i.response.send_message("❌ Ezt csak a kérelmező töltheti ki.", ephemeral=True)
+        szamjegyek = re.sub(r"[\s.,]", "", tagok)
+        if not nev or not szamjegyek.isdigit() or not 1 <= int(szamjegyek) <= 10_000_000:
+            return await i.response.send_message("❌ A tagszám egy egész szám legyen (pl. 250). Próbáld újra a gombbal.", ephemeral=True)
+        tagszam = int(szamjegyek)
+        async with self.zar(azon):
+            sor = await self.sor(azon)
+            if sor["statusz"] != "adatok":
+                return await i.response.send_message("❌ Ez a lépés már megvolt.", ephemeral=True)
+            if tiltas := await self.uj_partnerseg_tiltas(g, sor["invite_kod"], nev, azon):
+                return await i.response.send_message(f"❌ {tiltas}", ephemeral=True)
+            ajanlott = await self.javasolt_ping(g.id, tagszam)
+            await db.execute("UPDATE partnersegek SET statusz='ajanlat', partner_nev=?, tagszam=?, ping=? WHERE id=?",
+                             (nev[:100], tagszam, ajanlott, azon))
         e = discord.Embed(title="📊 Ping-javaslat", color=SARGA)
-        e.add_field(name="Szerver", value=inv.guild.name[:100])
+        e.add_field(name="Szerver", value=nev[:100])
         e.add_field(name="Tagok", value=tagszam_szoveg(tagszam))
         if ajanlott:
             e.add_field(name="Javasolt ping", value=f"**{ping_cimke(g, ajanlott)}**")
-            e.description = (f"A szerveredet ellenőriztem: a meghívó rendben van, és **{tagszam_szoveg(tagszam)}** tagod van.\n"
-                             f"Ennyi taggal ezt a pinget javasoljuk: **{ping_cimke(g, ajanlott)}**. Elfogadod?")
+            e.description = f"**{tagszam_szoveg(tagszam)}** taggal ezt a pinget javasoljuk: **{ping_cimke(g, ajanlott)}**. Elfogadod?"
             gombok = ("ajanl_el", "ajanl_ut")
         else:
             e.add_field(name="Javasolt ping", value="nincs ping")
-            e.description = (f"A szerveredet ellenőriztem: a meghívó rendben van, és **{tagszam_szoveg(tagszam)}** tagod van.\n"
-                             "Ennyi taggal a partnerség ping nélkül megy ki. Folytatod?")
+            e.description = f"**{tagszam_szoveg(tagszam)}** taggal a partnerség ping nélkül megy ki. Folytatod?"
             gombok = ("folytat",)
-        await uzenet.channel.send(f"<@{sor['user_id']}>", embed=e, view=nezet(sor["id"], *gombok),
-                                  allowed_mentions=discord.AllowedMentions(users=True))
+        await i.response.send_message(f"<@{sor['user_id']}>", embed=e, view=nezet(azon, *gombok),
+                                      allowed_mentions=discord.AllowedMentions(users=True))
 
     # ------------------------------------------------------------------ 3-4. lépés: ping és saját szöveg
     async def ajanlat_valasz(self, i: discord.Interaction, sor, akcio: str) -> None:
@@ -376,10 +370,11 @@ class Partner(commands.Cog):
         e = discord.Embed(title="🤝 Partnerségi kérelem – jóváhagyásra vár", color=SARGA, timestamp=most())
         e.description = (sor["partner_szoveg"] or "")[:1500]
         e.add_field(name="Szerver", value=sor["partner_nev"] or "–")
-        e.add_field(name="Tagok", value=tagszam_szoveg(sor["tagszam"] or 0))
+        e.add_field(name="Tagok (megadott)", value=tagszam_szoveg(sor["tagszam"] or 0))
         e.add_field(name="Ping", value=ping_cimke(g, sor["ping"]))
         e.add_field(name="Kérelmező", value=f"<@{sor['user_id']}>")
         e.add_field(name="Meghívó", value=f"https://discord.gg/{sor['invite_kod']}", inline=False)
+        e.add_field(name="⚠️ Ellenőrizd kézzel", value="A tagszámot és azt, hogy a meghívó soha nem jár-e le, a bot nem ellenőrizte.", inline=False)
         e.set_image(url=kepek[0].url)
         panel = await uzenet.channel.send(
             rang.mention if rang else None, embed=e, view=nezet(sor["id"], "mgr_el", "mgr_ut", "mgr_uz"),
@@ -392,6 +387,12 @@ class Partner(commands.Cog):
         sor = await self.sor(azon)
         if not sor or sor["guild_id"] != i.guild_id:
             return await i.response.send_message("❌ Ez a partnerségi kérelem nem található.", ephemeral=True)
+        if akcio == "adatok":
+            if i.user.id != sor["user_id"]:
+                return await i.response.send_message("❌ Ezt csak a kérelmező töltheti ki.", ephemeral=True)
+            if sor["statusz"] != "adatok":
+                return await i.response.send_message("❌ Ez a lépés már megvolt.", ephemeral=True)
+            return await i.response.send_modal(AdatokModal(azon))
         if akcio in ("ajanl_el", "ajanl_ut", "folytat"):
             return await self.ajanlat_valasz(i, sor, akcio)
         # Innentől a Partner Managerek gombjai.
@@ -418,12 +419,7 @@ class Partner(commands.Cog):
             sor = await self.sor(azon)
             if not sor or sor["guild_id"] != g.id or sor["statusz"] != "manager":
                 return "Ez a kérelem már le van zárva."
-            # Elfogadás előtt újra megnézzük a meghívót: a partner közben törölhette vagy lejáratóra cserélhette.
-            try:
-                inv = await self.meghivo_ellenorzes(sor["invite_kod"], g)
-            except MeghivoHiba as hiba:
-                return f"A partner meghívója időközben megváltozott, ezért most nem fogadható el: {hiba}"
-            tagszam = inv.approximate_member_count
+            tagszam = sor["tagszam"] or 0
             e = discord.Embed(title=f"🤝 {sor['partner_nev']}", description=(sor["partner_szoveg"] or "")[:4000], color=ZOLD, timestamp=most())
             e.add_field(name="👥 Tagok", value=tagszam_szoveg(tagszam))
             e.add_field(name="✅ Jóváhagyta", value=manager.mention)
@@ -436,7 +432,7 @@ class Partner(commands.Cog):
                 await csatorna.send(tartalom, embed=e, view=link, allowed_mentions=engedely)
             except discord.HTTPException:
                 return f"Nem tudok üzenetet küldeni a {csatorna.mention} csatornába."
-            await self.lezar_allapot(sor, "elfogadva", manager_id=manager.id, dontes_ido=ts(), tagszam=tagszam)
+            await self.lezar_allapot(sor, "elfogadva", manager_id=manager.id, dontes_ido=ts())
 
         await self._panel_lezar(g, sor, f"✅ Elfogadta {manager.mention}", ZOLD)
         await self._ticketbe(g, sor, content=(
