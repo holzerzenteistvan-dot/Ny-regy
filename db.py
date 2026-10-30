@@ -304,10 +304,19 @@ class DB:
 
     async def mentes(self, fajl: str) -> None:
         """Konzisztens pillanatkép az adatbázisról egy új fájlba (VACUUM INTO)."""
-        async with self._zar:
-            await self.kapcsolat.commit()  # a VACUUM nem futhat tranzakción belül
-            async with self.kapcsolat.execute("VACUUM INTO ?", (fajl,)):
-                pass
+        # Az olvasások nem várnak a zárra, ezért indításkor (amikor sok modul egyszerre kérdez) épp futhat egy olvasás.
+        # Ilyenkor a VACUUM "SQL statements in progress" hibával elutasítódik, így néhányszor újrapróbáljuk.
+        for kiserlet in range(6):
+            async with self._zar:
+                await self.kapcsolat.commit()  # a VACUUM nem futhat tranzakción belül
+                try:
+                    async with self.kapcsolat.execute("VACUUM INTO ?", (fajl,)):
+                        pass
+                    return
+                except aiosqlite.OperationalError as hiba:
+                    if "in progress" not in str(hiba) or kiserlet == 5:
+                        raise
+            await asyncio.sleep(2)
 
     async def fetchone(self, sql: str, args: tuple = ()):
         async with self.kapcsolat.execute(sql, args) as kurzor:
