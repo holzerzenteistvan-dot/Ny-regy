@@ -320,6 +320,9 @@ class Ticket(commands.Cog):
             e.add_field(name=kerdes[:256], value=valasz[:1000] or "–", inline=False)
         # A ping a tartalomban van (a beágyazáson kívül), így tényleg értesít.
         await csatorna.send(content=f"{tag.mention} {kezelo.mention}", embed=e, view=TicketNezet())
+        # Partnerségi ticketnél a partner modul veszi át a folyamatot (szöveg bekérése, ellenőrzés, ping-javaslat).
+        if (partner := self.bot.get_cog("Partner")) and kat["kulcs"] == await partner.ticket_tipus(g.id):
+            await partner.inditas(g, csatorna, tag, ugy)
         return csatorna
 
     async def ticket_letrehoz(self, i: discord.Interaction, kat, valaszok: dict):

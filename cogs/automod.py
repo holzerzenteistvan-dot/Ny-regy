@@ -272,6 +272,9 @@ class AutoMod(commands.Cog):
         if uzenet.channel.id in cfg["kivetel"] or await staff_e(self.bot, uzenet.author):
             return
         szoveg = uzenet.content
+        # A partnerségi ticketben a partner szövege meghívót és linkeket tartalmaz, ezeket itt nem töröljük.
+        partner = self.bot.get_cog("Partner")
+        partner_ticket = bool(partner and partner.aktiv_csatorna(uzenet.channel.id))
 
         if cfg["spam_limit"] and self._spam_e(uzenet, cfg):
             return await self._szabalysertes(uzenet, "spam", torol_tobbet=cfg["spam_masodperc"] + 5)
@@ -281,10 +284,10 @@ class AutoMod(commands.Cog):
         ):
             return await self._szabalysertes(uzenet, "tömeges említés")
 
-        if cfg["meghivo_szuro"] and MEGHIVO.search(szoveg):
+        if cfg["meghivo_szuro"] and not partner_ticket and MEGHIVO.search(szoveg):
             return await self._szabalysertes(uzenet, "Discord-meghívó küldése")
 
-        if cfg["link_szuro"] and tiltott_link(szoveg, cfg["domainek"]):
+        if cfg["link_szuro"] and not partner_ticket and tiltott_link(szoveg, cfg["domainek"]):
             return await self._szabalysertes(uzenet, "nem engedélyezett link")
 
         if cfg["szitok_szuro"] and cfg["szavak"] and tiltott_szo(szoveg, cfg["szavak"]):

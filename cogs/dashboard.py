@@ -38,7 +38,7 @@ from webui import (Nyers, bejelentkezes_oldal, cimke, csempe, ellenorzes, esc, f
 log = logging.getLogger("dcbot.dashboard")
 DISCORD_API = "https://discord.com/api/v10"
 MUNKAMENET_ORA = 6
-OLDALAK = {"", "alapok", "statisztika", "belepes", "ticketek", "szint", "kozosseg", "moderacio", "szankciok", "staff", "nyitas", "jelentkezesek"}
+OLDALAK = {"", "alapok", "statisztika", "belepes", "ticketek", "szint", "kozosseg", "moderacio", "szankciok", "staff", "nyitas", "jelentkezesek", "partner"}
 
 UZENETEK = {
     "mentve": "A beállítások mentve.", "kat_mentve": "A ticket-típus mentve, a panel frissült.", "kat_uj": "Az új ticket-típus létrejött.",
@@ -49,6 +49,8 @@ UZENETEK = {
     "nyitas_lezarva": "A szerver lezárva: a zárás üzenet kiment, a nyitás üzenet átíródott.", "nyitas_torolve": "Az időzített nyitás törölve.",
     "jel_ticket": "A ticket megnyílt az elfogadott jelentkezőnek.", "jel_panel": "A jelentkezési panel kihelyezve.",
     "szankcio_visszavonva": "A szankció visszavonva.", "szankcio_feloldva": "A kitiltás feloldva.",
+    "partner_elfogadva": "A partnerség elfogadva: kikerült a partnerek csatornájába.", "partner_elutasitva": "A partnerség elutasítva, a kérelmező értesítést kapott.",
+    "partner_uzenet": "Az üzenet elment a ticketbe.", "partner_szint_mentve": "A partner ping szint mentve.", "partner_szint_torolve": "A partner ping szint törölve.",
     "ticket_megnyitva": "A ticket megnyílt, a tag értesítést kapott.", "ticket_lezarva": "A ticket lezárása elindult, az átirat a naplóba kerül.",
 }
 HIBAK = {
@@ -129,6 +131,13 @@ SZEKCIOK = {
           seg="Ezeket kérdezi végig a bot privát üzenetben. Üresen hagyva az alapértelmezettek érvényesek."),
         m("jelentkezes_elfogad_uzenet", "Elfogadó üzenet (privátban)", "szoveg", teljes=True, sorok=3, alap=ALAP_ELFOGAD, seg="Használható: {tag}, {szerver}."),
         m("jelentkezes_elutasit_uzenet", "Elutasító üzenet (privátban)", "szoveg", teljes=True, sorok=3, alap=ALAP_ELUTASIT, seg="Használható: {tag}, {szerver}."),
+    ]},
+    "partner": {"cim": "Partnerség beállításai", "leiras": "A partnerségi ticket, a Partner Manager rang és a saját partnerszövegünk.", "mezok": [
+        m("partner_csatorna", "Az elfogadott partnerek csatornája", "csatorna", seg="Ide kerül a partner beágyazása a pinggel."),
+        m("partner_manager_rang", "Partner Manager rang", "rang", seg="Ők kapnak értesítést a bizonyítékról, és ők fogadhatják el vagy utasíthatják el a partnerséget."),
+        m("partner_ticket_tipus", "A partnerségi ticket-típus", "ticket_tipus", seg="Üresen hagyva a „Partnerség” típus. Az ilyen ticketben indul el a partner folyamat."),
+        m("partner_sajat_szoveg", "Saját partnerszövegünk", "szoveg", teljes=True, sorok=8, max_hossz=1900,
+          seg="Ezt küldi ki a bot, miután a kérelmező elfogadta a ping-javaslatot. Legfeljebb 1900 karakter."),
     ]},
     "nyitas_auto": {"cim": "Automatikus nyitás és zárás", "leiras": "Napi idő szerint magától nyit és zár a bot. A zárás üzenet beágyazott, a ping külön, mellette.", "mezok": [
         m("nyitas_auto", "Automatikus nyitás és zárás", "kapcsolo", alap=0, teljes=True,
@@ -222,6 +231,8 @@ class Dashboard(RPWeb, commands.Cog):
             web.post(g + "/ticket/panel", self.ticket_panel), web.post(g + "/szint/rang", self.szint_rang),
             web.post(g + "/szint/szorzo", self.szint_szorzo), web.post(g + "/raid", self.raid),
             web.get(g + "/nyitas", self.nyitas), web.post(g + "/nyitas/kuld", self.nyitas_kuld), web.post(g + "/nyitas/muvelet", self.nyitas_muvelet),
+            web.get(g + "/partner", self.partner), web.post(g + "/partner/szint", self.partner_szint),
+            web.post(g + "/partner/dontes", self.partner_dontes), web.post(g + "/partner/telepites", self.partner_telepites),
             web.get(g + "/jelentkezesek", self.jelentkezesek), web.post(g + "/jelentkezes/dontes", self.jelentkezes_dontes_web),
             web.post(g + "/jelentkezes/ticket", self.jelentkezes_ticket_web), web.post(g + "/jelentkezes/panel", self.jelentkezes_panel_web),
             web.post(g + "/szankcio/vegrehajt", self.szankcio_vegrehajt), web.post(g + "/szankcio/visszavon", self.szankcio_visszavon),
@@ -230,10 +241,7 @@ class Dashboard(RPWeb, commands.Cog):
         ])
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        host = os.getenv("DASHBOARD_HOST", "0.0.0.0")
-# Itt először a Render PORT változóját keressük, és CSAK ha az nincs, akkor esünk vissza a 8080-ra:
-        port_str = os.getenv("PORT") or os.getenv("DASHBOARD_PORT") or "8080"
-        port = int(port_str)
+        host, port = os.getenv("DASHBOARD_HOST", "127.0.0.1"), int(os.getenv("DASHBOARD_PORT", "8080"))
         await web.TCPSite(self.runner, host, port).start()
         log.info("A dashboard elindult: %s (helyi cím: %s:%s)", self.url, host, port)
 
@@ -476,7 +484,7 @@ class Dashboard(RPWeb, commands.Cog):
             elif t == "rovid":
                 ertek = str(adat.get(k, "")).strip()[: mz.get("max_hossz", 200)]
             else:
-                ertek = str(adat.get(k, "")).strip()[:1000]
+                ertek = str(adat.get(k, "")).strip()[: mz.get("max_hossz", 1000)]
             if ertek == "" and not mz.get("ures_ment"):
                 await db.torol(g.id, k)
             else:
@@ -512,6 +520,7 @@ class Dashboard(RPWeb, commands.Cog):
             ("vezetorang", "Vezetői rang beállítva", "alapok", True), ("vezetoi_csatorna", "Vezetői csatorna beállítva", "alapok", True),
             ("belepes_csatorna", "Üdvözlő csatorna beállítva", "belepes", False), ("javaslat_csatorna", "Javaslatok csatornája beállítva", "kozosseg", False),
             ("riport_csatorna", "Heti és havi statisztikai riport csatornája", "staff", False),
+            ("partner_csatorna", "Partnerek csatornája beállítva", "partner", False), ("partner_manager_rang", "Partner Manager rang beállítva", "partner", False),
         ]:
             ertek = await db.get(g.id, kulcs)
             letezik = bool(ertek) and (g.get_channel(int(ertek)) or g.get_role(int(ertek))) is not None
@@ -879,6 +888,113 @@ class Dashboard(RPWeb, commands.Cog):
         except discord.HTTPException:
             self.vissza(g, adat, hiba="panel_hiba")
         self.vissza(g, adat, ok="panel")
+
+    # ================================================================== partnerség
+    PARTNER_PING = [("nincs", "Nincs ping"), ("everyone", "@everyone"), ("here", "@here"), ("rang", "Egy rang pingelése")]
+
+    async def partner(self, request: web.Request):
+        s, g = self.hozzaferes(request)
+        db, op = self.bot.db, self.opciok(g)
+        pcog = self.bot.get_cog("Partner")
+        from cogs.partner import ping_cimke, tagszam_szoveg
+        szintek = await db.fetchall("SELECT min_tagok, ping FROM partner_szintek WHERE guild_id=? ORDER BY min_tagok", (g.id,))
+        torles = lambda tagok: str(urlap(f"/szerver/{g.id}/partner/szint", s["c"], Nyers(
+            f'<input type="hidden" name="muvelet" value="torol"><input type="hidden" name="tagok" value="{tagok}">'
+            '<button class="veszely kicsi">Törlés</button>'), vissza="partner", sav=False))
+        szint_tabla = tabla(["Legalább ennyi tag", "Javasolt ping", ""], [
+            [tagszam_szoveg(x["min_tagok"]), ping_cimke(g, x["ping"]), Nyers(torles(x["min_tagok"]))] for x in szintek], "partner-szintek", False)
+        ping_opciok = "".join(f'<option value="{v}">{n}</option>' for v, n in self.PARTNER_PING)
+        szint_uj = urlap(f"/szerver/{g.id}/partner/szint", s["c"], Nyers(
+            '<input type="hidden" name="muvelet" value="ad"><div class="sor">'
+            '<input type="number" name="tagok" min="0" max="10000000" placeholder="Tagszám" style="max-width:130px" required>'
+            f'<select name="ping" style="max-width:200px">{ping_opciok}</select>'
+            f'<select name="rang" style="max-width:240px"><option value="">— rang (csak rang pingnél) —</option>{opcio_html(op["rang"], set())}</select>'
+            '<button>Mentés</button></div>'), vissza="partner", sav=False)
+        hely = '<div style="height:12px"></div>'
+        szint_kartya = kartya("Tagszám → ping", f"{szint_tabla}{hely}{szint_uj}",
+                              "A bot a partnerszerver tagszáma alapján a legmagasabb elért szint pingjét javasolja. Ugyanazzal a tagszámmal újra mentve felülíródik.")
+        sorok = await db.fetchall("SELECT * FROM partnersegek WHERE guild_id=? AND statusz!='szoveg' ORDER BY id DESC LIMIT 50", (g.id,))
+        allapot = {"ajanlat": ("ping-javaslat", ""), "kep": ("bizonyítékra vár", ""), "manager": ("manager döntésére vár", "sarga"),
+                   "elfogadva": ("elfogadva", "zold"), "elutasitva": ("elutasítva", "piros"), "megszakitva": ("megszakadt", "")}
+        lista = tabla(["Szerver", "Tagok", "Ping", "Állapot", "Jóváhagyta/elutasította", "Dátum"], [[
+            x["partner_nev"] or "–", tagszam_szoveg(x["tagszam"] or 0), ping_cimke(g, x["ping"]),
+            cimke(*allapot.get(x["statusz"], (x["statusz"], ""))), self._nev(g, x["manager_id"]), mp_datum(x["dontes_ido"] or x["letrehozva"])]
+            for x in sorok], "partnerek")
+        def mini(muvelet, azon, gomb, stilus, mezo=""):
+            return str(urlap(f"/szerver/{g.id}/partner/dontes", s["c"], Nyers(
+                f'<input type="hidden" name="muvelet" value="{muvelet}"><input type="hidden" name="azon" value="{azon}">'
+                f'<div class="sor">{mezo}<button class="{stilus} kicsi">{gomb}</button></div>'), vissza="partner", sav=False))
+
+        mezo = lambda nev, ph: f'<input type="text" name="szoveg" placeholder="{ph}" maxlength="500" style="min-width:180px" required>'
+        fuggo = [x for x in sorok if x["statusz"] == "manager"]
+        fuggo_tabla = tabla(["Szerver", "Tagok", "Ping", "Kérelmező", "Ticket", "Műveletek"], [[
+            x["partner_nev"] or "–", tagszam_szoveg(x["tagszam"] or 0), ping_cimke(g, x["ping"]), self._nev(g, x["user_id"]),
+            Nyers(f'<a href="https://discord.com/channels/{g.id}/{x["csatorna_id"]}" target="_blank" rel="noopener">megnyitás</a>'
+                  f' • <a href="https://discord.gg/{esc(x["invite_kod"] or "")}" target="_blank" rel="noopener">meghívó</a>'),
+            Nyers(mini("elfogad", x["id"], "✅ Elfogadás", "") + mini("elutasit", x["id"], "❌ Elutasítás", "veszely", mezo("szoveg", "Elutasítás oka"))
+                  + mini("uzenet", x["id"], "✉️ Üzenet", "masodlagos", mezo("szoveg", "Üzenet a kérelmezőnek")))] for x in fuggo], "partner-fuggo", False)
+        fuggo_kartya = kartya("Jóváhagyásra váró kérelmek", fuggo_tabla if fuggo else ures("Nincs jóváhagyásra váró kérelem."),
+                              "A bizonyíték (képernyőkép) a ticketben látható. Ugyanezt a Partner Managerek a Discordban is megtehetik.")
+        telepites = kartya("Ticket-típus", str(urlap(f"/szerver/{g.id}/partner/telepites", s["c"], Nyers(
+            '<button>Partnerség ticket-típus létrehozása / bekapcsolása</button>'), vissza="partner", sav=False)),
+            "Létrehozza a „Partnerség” ticket-típust (kezelő rang: a Partner Manager), és frissíti a kihelyezett ticket panelt.")
+        return self.kirajzol(
+            request, s, g, "partner", "Partnerségek", oldalfej("Partnerségek", "Beállítások, tagszám alapú ping szintek és a kérelmek listája."),
+            fuggo_kartya, await self.szekcio(s, g, "partner", "partner"), f'<div class="racs r2">{szint_kartya}{telepites}</div>',
+            kartya("Kérelmek", lista, "A legutóbbi 50 kérelem. Az elfogadást és az elutasítást a Partner Managerek a ticketben végzik."))
+
+    @staticmethod
+    def _discord_szoveg_tiszta(szoveg: str) -> str:
+        """A Discord-jelölések (időbélyeg, félkövér, kód) átírása a weben olvasható szövegre."""
+        szoveg = re.sub(r"<t:(\d+):[A-Za-z]>", lambda m: mp_datum(int(m.group(1))), szoveg)
+        return szoveg.replace("**", "").replace("`", "")
+
+    async def partner_dontes(self, request: web.Request):
+        s, g, adat = await self._post(request)
+        partner = self.bot.get_cog("Partner")
+        try:
+            azon = int(adat.get("azon", ""))
+        except ValueError:
+            self.vissza(g, adat, hiba="ervenytelen")
+        muvelet, szoveg, mod = adat.get("muvelet"), str(adat.get("szoveg", "")).strip(), self.web_mod(s)
+        if muvelet == "elfogad":
+            hiba, ok = await partner.dontes_elfogad(g, azon, mod), "partner_elfogadva"
+        elif muvelet in ("elutasit", "uzenet") and szoveg:
+            if muvelet == "elutasit":
+                hiba, ok = await partner.dontes_elutasit(g, azon, mod, szoveg[:500]), "partner_elutasitva"
+            else:
+                hiba, ok = await partner.dontes_uzenet(g, azon, mod, szoveg[:1500]), "partner_uzenet"
+        else:
+            self.vissza(g, adat, hiba="ervenytelen")
+        if hiba:
+            self.vissza(g, adat, szoveg=("hiba", self._discord_szoveg_tiszta(hiba)))
+        self.vissza(g, adat, ok=ok)
+
+    async def partner_telepites(self, request: web.Request):
+        s, g, adat = await self._post(request)
+        uzenet = await self.bot.get_cog("Partner").telepit(g)
+        self.vissza(g, adat, szoveg=("hiba" if uzenet.startswith("❌") else "ok", uzenet.removeprefix("❌ ").removeprefix("✅ ")))
+
+    async def partner_szint(self, request: web.Request):
+        s, g, adat = await self._post(request)
+        db = self.bot.db
+        try:
+            tagok = int(adat.get("tagok", ""))
+            assert 0 <= tagok <= 10_000_000
+            if adat.get("muvelet") == "torol":
+                await db.execute("DELETE FROM partner_szintek WHERE guild_id=? AND min_tagok=?", (g.id, tagok))
+                self.vissza(g, adat, ok="partner_szint_torolve")
+            tipus = adat.get("ping", "nincs")
+            assert tipus in {v for v, _ in self.PARTNER_PING}
+            rang = next((r for r in g.roles if str(r.id) == adat.get("rang") and not r.is_default()), None)
+            assert tipus != "rang" or rang is not None
+        except (ValueError, AssertionError):
+            self.vissza(g, adat, hiba="ervenytelen")
+        from cogs.nyitas import ping_ertek
+        await db.execute(
+            "INSERT INTO partner_szintek (guild_id, min_tagok, ping) VALUES (?, ?, ?) ON CONFLICT(guild_id, min_tagok) DO UPDATE SET ping=excluded.ping",
+            (g.id, tagok, ping_ertek(tipus, str(rang.id) if rang else "")))
+        self.vissza(g, adat, ok="partner_szint_mentve")
 
     # ================================================================== szint
     async def szint(self, request: web.Request):
