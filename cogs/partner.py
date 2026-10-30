@@ -212,12 +212,22 @@ class Partner(commands.Cog):
     # ------------------------------------------------------------------ meghívó és előzmények
     async def meghivo_ellenorzes(self, kod: str, g: discord.Guild) -> discord.Invite:
         """Érvényes-e a meghívó, soha nem jár-e le, és kiolvasható-e a tagszám. Hibánál MeghivoHiba."""
-        try:
-            inv = await self.bot.fetch_invite(kod, with_counts=True, with_expiration=True)
-        except discord.NotFound:
-            raise MeghivoHiba("Ez a meghívó érvénytelen vagy már lejárt. Hozz létre egy újat, és küldd be újra a szöveget.")
-        except discord.HTTPException:
-            raise MeghivoHiba("A meghívót most nem sikerült ellenőrizni (átmeneti Discord-hiba). Próbáld újra egy perc múlva.", atmeneti=True)
+        inv = None
+        for kiserlet in range(2):  # átmeneti hibánál (429, 5xx) egyszer újrapróbáljuk
+            try:
+                inv = await self.bot.fetch_invite(kod, with_counts=True, with_expiration=True)
+                break
+            except discord.NotFound:
+                raise MeghivoHiba("Ez a meghívó érvénytelen vagy már lejárt. Hozz létre egy újat, és küldd be újra a szöveget.")
+            except discord.HTTPException as hiba:
+                log.warning("A meghívó ellenőrzése nem sikerült: kód=%s státusz=%s discord-hibakód=%s szöveg=%s",
+                            kod, hiba.status, hiba.code, hiba.text[:200])
+                if kiserlet == 0 and (hiba.status == 429 or hiba.status >= 500):
+                    await asyncio.sleep(2)
+                    continue
+                raise MeghivoHiba(
+                    f"A meghívót most nem sikerült ellenőrizni (Discord-hiba: {hiba.status}"
+                    f"{f'/{hiba.code}' if hiba.code else ''}). Próbáld újra egy perc múlva, ha marad a hiba, szólj egy staff tagnak.", atmeneti=True)
         if inv.guild is None:
             raise MeghivoHiba("Ez a meghívó nem egy szerverre mutat.")
         if inv.guild.id == g.id:
