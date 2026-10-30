@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("dcbot")
 
 MODULOK = (
-    "alap", "belepes", "szankcio", "automod", "ticket",
+    "alap", "belepes", "szankcio", "automod", "ticket", "partner",
     "shift", "inaktivitas", "staff", "nyitas", "szint", "nyeremeny", "javaslat", "statisztika",
     "segitseg", "karbantartas", "dashboard",
 )

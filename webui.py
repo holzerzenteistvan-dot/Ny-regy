@@ -157,7 +157,7 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='s'){
 
 NAV = [
     ("Általános", [("", "📊", "Áttekintés"), ("alapok", "⚙️", "Alapok"), ("statisztika", "📈", "Statisztika")]),
-    ("RP szerver", [("nyitas", "🟢", "Szerver nyitás"), ("jelentkezesek", "📝", "Jelentkezések")]),
+    ("RP szerver", [("nyitas", "🟢", "Szerver nyitás"), ("jelentkezesek", "📝", "Jelentkezések"), ("partner", "🤝", "Partnerségek")]),
     ("Közösség", [("belepes", "👋", "Belépés"), ("ticketek", "🎫", "Ticketek"), ("szint", "✨", "Szintek"),
                   ("kozosseg", "💡", "Javaslatok és játékok")]),
     ("Moderáció", [("moderacio", "🛡️", "Automod és szankciók"), ("szankciok", "📜", "Szankciónapló")]),

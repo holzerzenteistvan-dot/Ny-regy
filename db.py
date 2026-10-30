@@ -197,6 +197,35 @@ CREATE TABLE IF NOT EXISTS nyitasok (
 );
 CREATE INDEX IF NOT EXISTS idx_nyitasok ON nyitasok (guild_id, statusz);
 
+CREATE TABLE IF NOT EXISTS partnersegek (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER NOT NULL,
+    ticket_id        INTEGER,
+    csatorna_id      INTEGER NOT NULL,
+    user_id          INTEGER NOT NULL,
+    statusz          TEXT    NOT NULL DEFAULT 'szoveg',
+    partner_guild_id INTEGER,
+    partner_nev      TEXT,
+    partner_szoveg   TEXT,
+    invite_kod       TEXT,
+    tagszam          INTEGER,
+    ping             TEXT    NOT NULL DEFAULT '',
+    manager_id       INTEGER,
+    panel_uzenet_id  INTEGER,
+    indok            TEXT,
+    letrehozva       INTEGER NOT NULL,
+    dontes_ido       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_partnersegek_partner ON partnersegek (guild_id, partner_guild_id, statusz);
+CREATE INDEX IF NOT EXISTS idx_partnersegek_csatorna ON partnersegek (csatorna_id);
+
+CREATE TABLE IF NOT EXISTS partner_szintek (
+    guild_id  INTEGER NOT NULL,
+    min_tagok INTEGER NOT NULL,
+    ping      TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (guild_id, min_tagok)
+);
+
 CREATE TABLE IF NOT EXISTS napi_aktivitas (
     guild_id INTEGER NOT NULL,
     nap      TEXT    NOT NULL,
