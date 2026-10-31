@@ -50,7 +50,7 @@ UZENETEK = {
     "jel_ticket": "A ticket megnyílt az elfogadott jelentkezőnek.", "jel_panel": "A jelentkezési panel kihelyezve.",
     "szankcio_visszavonva": "A szankció visszavonva.", "szankcio_feloldva": "A kitiltás feloldva.",
     "partner_elfogadva": "A partnerség elfogadva: kikerült a partnerek csatornájába.", "partner_elutasitva": "A partnerség elutasítva, a kérelmező értesítést kapott.",
-    "partner_uzenet": "Az üzenet elment a ticketbe.", "partner_szint_mentve": "A partner ping szint mentve.", "partner_szint_torolve": "A partner ping szint törölve.",
+    "partner_uzenet": "Az üzenet elment a ticketbe.", "partner_hozzaadva": "A partner felvéve, és kikerült a partnerek csatornájába.", "partner_gomb_kint": "A „Partner hozzáadása” gomb kikerült a csatornába.", "partner_szint_mentve": "A partner ping szint mentve.", "partner_szint_torolve": "A partner ping szint törölve.",
     "ticket_megnyitva": "A ticket megnyílt, a tag értesítést kapott.", "ticket_lezarva": "A ticket lezárása elindult, az átirat a naplóba kerül.",
 }
 HIBAK = {
@@ -233,6 +233,7 @@ class Dashboard(RPWeb, commands.Cog):
             web.get(g + "/nyitas", self.nyitas), web.post(g + "/nyitas/kuld", self.nyitas_kuld), web.post(g + "/nyitas/muvelet", self.nyitas_muvelet),
             web.get(g + "/partner", self.partner), web.post(g + "/partner/szint", self.partner_szint),
             web.post(g + "/partner/dontes", self.partner_dontes), web.post(g + "/partner/telepites", self.partner_telepites),
+            web.post(g + "/partner/uj", self.partner_uj), web.post(g + "/partner/gomb", self.partner_gomb),
             web.get(g + "/jelentkezesek", self.jelentkezesek), web.post(g + "/jelentkezes/dontes", self.jelentkezes_dontes_web),
             web.post(g + "/jelentkezes/ticket", self.jelentkezes_ticket_web), web.post(g + "/jelentkezes/panel", self.jelentkezes_panel_web),
             web.post(g + "/szankcio/vegrehajt", self.szankcio_vegrehajt), web.post(g + "/szankcio/visszavon", self.szankcio_visszavon),
@@ -938,9 +939,29 @@ class Dashboard(RPWeb, commands.Cog):
         telepites = kartya("Ticket-típus", str(urlap(f"/szerver/{g.id}/partner/telepites", s["c"], Nyers(
             '<button>Partnerség ticket-típus létrehozása / bekapcsolása</button>'), vissza="partner", sav=False)),
             "Létrehozza a „Partnerség” ticket-típust (kezelő rang: a Partner Manager), és frissíti a kihelyezett ticket panelt.")
+        def mezo(nev, cim, html, teljes=False):
+            return f'<div class="mezo{" teljes" if teljes else ""}"><label for="u-{nev}">{cim}</label>{html}</div>'
+
+        uj_ping = "".join(f'<option value="{v}">{n}</option>' for v, n in [("auto", "Automatikus (tagszám alapján)"), *self.PARTNER_PING])
+        uj_urlap = urlap(f"/szerver/{g.id}/partner/uj", s["c"], Nyers('<div class="mezok">'
+            + mezo("nev", "A szerver neve", '<input id="u-nev" type="text" name="nev" maxlength="100" required>')
+            + mezo("tagok", "Tagok száma", '<input id="u-tagok" type="number" name="tagok" min="1" max="10000000" required>')
+            + mezo("link", "Meghívó linkje", '<input id="u-link" type="text" name="link" maxlength="100" placeholder="https://discord.gg/..." required>')
+            + mezo("ping", "Ping", f'<select id="u-ping" name="ping">{uj_ping}</select>')
+            + mezo("rang", "Rang (csak „Egy rang pingelése” esetén)", f'<select id="u-rang" name="rang"><option value="">— nincs —</option>{opcio_html(op["rang"], set())}</select>')
+            + mezo("kerelmezo", "Kérelmező azonosítója (nem kötelező)", '<input id="u-kerelmezo" type="text" name="kerelmezo" maxlength="40" placeholder="Üresen: te vagy a kérelmező">')
+            + mezo("szoveg", "Partnerszöveg", '<textarea id="u-szoveg" name="szoveg" rows="6" maxlength="4000" required></textarea>', True)
+            + '</div><button>Partner felvétele és kihelyezése</button>'), vissza="partner", sav=False)
+        uj_kartya = kartya("Új partner hozzáadása", uj_urlap,
+                           "Ticket nélkül, kézzel: a partner azonnal kikerül a partnerek csatornájába a kiválasztott pinggel, és beleszámít a 3 hónapos szabályba is.")
+        gomb_urlap = urlap(f"/szerver/{g.id}/partner/gomb", s["c"], Nyers(
+            '<div class="sor"><select name="csatorna" required><option value="">— csatorna —</option>'
+            f'{opcio_html(op["csatorna"], set())}</select><button>Gomb kihelyezése</button></div>'), vissza="partner", sav=False)
+        gomb_kartya = kartya("Kihelyezhető gomb", gomb_urlap,
+                             "A csatornába kikerül egy „Partner hozzáadása” gomb, amivel a Partner Managerek a Discordban nyithatják meg a hozzáadó panelt (parancs: /partnership add).")
         return self.kirajzol(
             request, s, g, "partner", "Partnerségek", oldalfej("Partnerségek", "Beállítások, tagszám alapú ping szintek és a kérelmek listája."),
-            fuggo_kartya, await self.szekcio(s, g, "partner", "partner"), f'<div class="racs r2">{szint_kartya}{telepites}</div>',
+            fuggo_kartya, await self.szekcio(s, g, "partner", "partner"), f'<div class="racs r2">{szint_kartya}{telepites}</div>', uj_kartya, gomb_kartya,
             kartya("Kérelmek", lista, "A legutóbbi 50 kérelem. Az elfogadást és az elutasítást a Partner Managerek a ticketben végzik."))
 
     @staticmethod
@@ -969,6 +990,34 @@ class Dashboard(RPWeb, commands.Cog):
         if hiba:
             self.vissza(g, adat, szoveg=("hiba", self._discord_szoveg_tiszta(hiba)))
         self.vissza(g, adat, ok=ok)
+
+    async def partner_uj(self, request: web.Request):
+        s, g, adat = await self._post(request)
+        from cogs.nyitas import ping_ertek
+        tipus = adat.get("ping", "auto")
+        if tipus == "auto":
+            ping = "auto"
+        elif tipus in {v for v, _ in self.PARTNER_PING}:
+            rang = next((r for r in g.roles if str(r.id) == adat.get("rang") and not r.is_default()), None)
+            if tipus == "rang" and rang is None:
+                self.vissza(g, adat, szoveg=("hiba", "Rang pingeléséhez válaszd ki a rangot is."))
+            ping = ping_ertek(tipus, str(rang.id) if rang else "") or "nincs"
+        else:
+            self.vissza(g, adat, hiba="ervenytelen")
+        hiba = await self.bot.get_cog("Partner").kezi_hozzaadas(
+            g, self.web_mod(s), adat.get("nev"), adat.get("tagok"), adat.get("link"), adat.get("szoveg"), ping, adat.get("kerelmezo"))
+        if hiba:
+            self.vissza(g, adat, szoveg=("hiba", hiba))
+        self.vissza(g, adat, ok="partner_hozzaadva")
+
+    async def partner_gomb(self, request: web.Request):
+        s, g, adat = await self._post(request)
+        csatorna = next((c for c in g.text_channels if str(c.id) == adat.get("csatorna")), None)
+        if csatorna is None:
+            self.vissza(g, adat, hiba="ervenytelen")
+        if hiba := await self.bot.get_cog("Partner").panel_kihelyez(csatorna):
+            self.vissza(g, adat, szoveg=("hiba", hiba))
+        self.vissza(g, adat, ok="partner_gomb_kint")
 
     async def partner_telepites(self, request: web.Request):
         s, g, adat = await self._post(request)

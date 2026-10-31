@@ -36,7 +36,7 @@ SUGO = [
         "`/staff riport`, `/staff pontozas`, más staff tagok teljesítménye",
     ]),
     (3, "⚙️ Adminisztrátorok", [
-        "`/partner telepites`, `kezelo_rang`, `csatorna`, `szoveg`, `szint_beallit`, `szint_torol`, `szintek` – partnerségi rendszer",
+        "`/partnership add`, `/partnership panel` – partner kézi felvétele; `/partner telepites`, `kezelo_rang`, `csatorna`, `szoveg`, `szint_beallit`, `szint_torol`, `szintek` – partnerségi rendszer",
         "`/beallitas naplo`, `staffrang`, `vezetoi`, `belepes`, `allapot`",
         "`/automod ...` – szűrők, tiltott szavak, engedélyezett linkek, raid mód",
         "`/ticket panel`, `kategoria` • `/shift panel`, `beallit` • `/inaktivitas beallit` • `/staff beallit`",

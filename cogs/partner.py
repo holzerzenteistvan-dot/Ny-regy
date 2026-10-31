@@ -33,6 +33,7 @@ MEGHIVO_RE = re.compile(r"(?:https?://)?(?:www\.)?(?:discord\.gg|discord(?:app)?
 PING_VALASZTEK = [("Nincs ping", "nincs"), ("@everyone", "everyone"), ("@here", "here"), ("Egy rang pingelése", "rang")]
 
 GOMBOK = {
+    "uj": ("Partner hozzáadása", "➕", discord.ButtonStyle.primary),
     "adatok": ("Adatok megadása", "📝", discord.ButtonStyle.primary),
     "ajanl_el": ("Elfogadom", "✅", discord.ButtonStyle.success),
     "ajanl_ut": ("Nem kérem a pinget", "❌", discord.ButtonStyle.danger),
@@ -59,6 +60,12 @@ def meghivo_kodok(szoveg: str) -> list[str]:
         if kod not in kodok:
             kodok.append(kod)
     return kodok
+
+
+def tagszam_beolvas(szoveg: str | None) -> int | None:
+    """Beírt tagszám (szóközzel, ponttal vagy vesszővel is) egész számmá; None, ha érvénytelen."""
+    szamjegyek = re.sub(r"[\s.,]", "", szoveg or "")
+    return int(szamjegyek) if szamjegyek.isdigit() and 1 <= int(szamjegyek) <= 10_000_000 else None
 
 
 def tagszam_szoveg(n: int) -> str:
@@ -111,6 +118,85 @@ class AdatokModal(discord.ui.Modal, title="A partnerszerver adatai"):
 
     async def on_submit(self, i: discord.Interaction):
         await i.client.get_cog("Partner").adatok(i, self.azon, str(self.nev).strip(), str(self.tagok))
+
+
+class UjPartnerModal(discord.ui.Modal, title="Új partner adatai"):
+    nev = discord.ui.TextInput(label="A szerver neve", max_length=100)
+    tagok = discord.ui.TextInput(label="Tagok száma", max_length=9, placeholder="Pl. 250")
+    link = discord.ui.TextInput(label="Meghívó linkje", max_length=100, placeholder="https://discord.gg/...")
+    szoveg = discord.ui.TextInput(label="Partnerszöveg", style=discord.TextStyle.paragraph, max_length=4000)
+    kerelmezo = discord.ui.TextInput(label="Kérelmező (azonosító vagy említés, nem kötelező)", required=False, max_length=40)
+
+    def __init__(self, nezet: "UjPartnerNezet"):
+        super().__init__()
+        self.nezet = nezet
+        for kulcs in ("nev", "tagok", "link", "szoveg", "kerelmezo"):
+            getattr(self, kulcs).default = nezet.adat.get(kulcs) or None
+
+    async def on_submit(self, i: discord.Interaction):
+        self.nezet.adat = {k: str(getattr(self, k)).strip() for k in ("nev", "tagok", "link", "szoveg", "kerelmezo")}
+        await i.response.edit_message(embed=await self.nezet.embed(i.guild), view=self.nezet)
+
+
+class UjPartnerNezet(discord.ui.View):
+    """A kézi partner-hozzáadás panelje (csak annak látszik, aki megnyitotta): ping választó, adatok űrlap, közzététel."""
+
+    def __init__(self, cog: "Partner", user: discord.abc.User, ping_opciok: list[tuple[str, str]]):
+        super().__init__(timeout=900)
+        self.cog, self.user_id, self.adat, self.ping = cog, user.id, {}, "auto"
+        self.valaszto = discord.ui.Select(
+            placeholder="Ping", options=[discord.SelectOption(label=nev, value=ertek, default=ertek == "auto") for ertek, nev in ping_opciok])
+        self.valaszto.callback = self.ping_valasztva
+        self.add_item(self.valaszto)
+
+    async def interaction_check(self, i: discord.Interaction) -> bool:
+        if i.user.id != self.user_id:
+            await i.response.send_message("❌ Ez nem a te paneled.", ephemeral=True)
+            return False
+        return True
+
+    async def embed(self, g: discord.Guild) -> discord.Embed:
+        a = self.adat
+        e = discord.Embed(title="➕ Új partner hozzáadása", color=KEK)
+        if not a:
+            e.description = "Válaszd ki a pinget, kattints az **Adatok megadása** gombra, majd a **Közzététel** gombbal kikerül a partner."
+        tagszam = tagszam_beolvas(a.get("tagok"))
+        ping = self.ping
+        if ping == "auto":
+            ajanlott = await self.cog.javasolt_ping(g.id, tagszam) if tagszam else None
+            ping_szoveg = "automatikus (tagszám alapján)" + (f": **{ping_cimke(g, ajanlott)}**" if ajanlott is not None else "")
+        else:
+            ping_szoveg = ping_cimke(g, "" if ping == "nincs" else ping)
+        e.add_field(name="Szerver", value=a.get("nev") or "–")
+        e.add_field(name="Tagok", value=tagszam_szoveg(tagszam) if tagszam else "–")
+        e.add_field(name="Ping", value=ping_szoveg)
+        e.add_field(name="Meghívó", value=a.get("link") or "–", inline=False)
+        if a.get("szoveg"):
+            e.add_field(name="Partnerszöveg", value=a["szoveg"][:500] + ("…" if len(a["szoveg"]) > 500 else ""), inline=False)
+        kodok = meghivo_kodok(a.get("link", ""))
+        if kodok and (tiltas := await self.cog.uj_partnerseg_tiltas(g, kodok[0], a.get("nev"), 0)):
+            e.add_field(name="⚠️ Figyelem", value=tiltas, inline=False)
+        return e
+
+    async def ping_valasztva(self, i: discord.Interaction):
+        self.ping = self.valaszto.values[0]
+        for opcio in self.valaszto.options:
+            opcio.default = opcio.value == self.ping
+        await i.response.edit_message(embed=await self.embed(i.guild), view=self)
+
+    @discord.ui.button(label="Adatok megadása", emoji="📝", style=discord.ButtonStyle.primary, row=1)
+    async def adatok_gomb(self, i: discord.Interaction, gomb: discord.ui.Button):
+        await i.response.send_modal(UjPartnerModal(self))
+
+    @discord.ui.button(label="Közzététel", emoji="✅", style=discord.ButtonStyle.success, row=1)
+    async def kozzetesz_gomb(self, i: discord.Interaction, gomb: discord.ui.Button):
+        await i.response.defer()
+        a = self.adat
+        hiba = await self.cog.kezi_hozzaadas(i.guild, i.user, a.get("nev"), a.get("tagok"), a.get("link"), a.get("szoveg"), self.ping, a.get("kerelmezo"))
+        if hiba:
+            return await i.followup.send(f"❌ {hiba}", ephemeral=True)
+        self.stop()
+        await i.edit_original_response(content="✅ A partner kikerült a partnerek csatornájába.", embed=None, view=None)
 
 
 class ElutasitModal(discord.ui.Modal, title="Partnerség elutasítása"):
@@ -296,10 +382,9 @@ class Partner(commands.Cog):
         sor = await self.sor(azon)
         if not sor or sor["guild_id"] != g.id or i.user.id != sor["user_id"]:
             return await i.response.send_message("❌ Ezt csak a kérelmező töltheti ki.", ephemeral=True)
-        szamjegyek = re.sub(r"[\s.,]", "", tagok)
-        if not nev or not szamjegyek.isdigit() or not 1 <= int(szamjegyek) <= 10_000_000:
+        tagszam = tagszam_beolvas(tagok)
+        if not nev or tagszam is None:
             return await i.response.send_message("❌ A tagszám egy egész szám legyen (pl. 250). Próbáld újra a gombbal.", ephemeral=True)
-        tagszam = int(szamjegyek)
         async with self.zar(azon):
             sor = await self.sor(azon)
             if sor["statusz"] != "adatok":
@@ -384,6 +469,8 @@ class Partner(commands.Cog):
 
     # ------------------------------------------------------------------ gombok
     async def gomb(self, i: discord.Interaction, akcio: str, azon: int) -> None:
+        if akcio == "uj":  # a kihelyezett „Partner hozzáadása” gomb: nem tartozik kérelemhez
+            return await self.uj_panel_nyit(i)
         sor = await self.sor(azon)
         if not sor or sor["guild_id"] != i.guild_id:
             return await i.response.send_message("❌ Ez a partnerségi kérelem nem található.", ephemeral=True)
@@ -420,18 +507,9 @@ class Partner(commands.Cog):
             if not sor or sor["guild_id"] != g.id or sor["statusz"] != "manager":
                 return "Ez a kérelem már le van zárva."
             tagszam = sor["tagszam"] or 0
-            e = discord.Embed(title=f"🤝 {sor['partner_nev']}", description=(sor["partner_szoveg"] or "")[:4000], color=ZOLD, timestamp=most())
-            e.add_field(name="👥 Tagok", value=tagszam_szoveg(tagszam))
-            e.add_field(name="✅ Jóváhagyta", value=manager.mention)
-            e.add_field(name="📩 Kérelmező", value=f"<@{sor['user_id']}>")
-            e.set_footer(text="Partnerség")
-            link = discord.ui.View()
-            link.add_item(discord.ui.Button(label="Csatlakozás", emoji="🔗", url=f"https://discord.gg/{sor['invite_kod']}"))
-            tartalom, engedely = ping_tartalom(sor["ping"])  # a ping az üzenet szövegében van, az embeden kívül
-            try:
-                await csatorna.send(tartalom, embed=e, view=link, allowed_mentions=engedely)
-            except discord.HTTPException:
-                return f"Nem tudok üzenetet küldeni a {csatorna.mention} csatornába."
+            if hiba := await self.kozzetesz(g, csatorna, sor["partner_nev"], sor["partner_szoveg"], sor["invite_kod"], tagszam,
+                                            sor["ping"], manager, sor["user_id"]):
+                return hiba
             await self.lezar_allapot(sor, "elfogadva", manager_id=manager.id, dontes_ido=ts())
 
         await self._panel_lezar(g, sor, f"✅ Elfogadta {manager.mention}", ZOLD)
@@ -513,6 +591,91 @@ class Partner(commands.Cog):
         hiba = await self.dontes_uzenet(i.guild, azon, i.user, szoveg)
         await i.followup.send(f"❌ {hiba}" if hiba else "✅ Az üzenet elment a ticketbe.", ephemeral=True)
 
+    async def kozzetesz(self, g: discord.Guild, csatorna: discord.TextChannel, nev: str, szoveg: str, kod: str, tagszam: int,
+                        ping: str, manager, kerelmezo_id: int) -> str | None:
+        """A partner kihelyezése a partnerek csatornájába. Hibánál az olvasható szöveg, különben None."""
+        e = discord.Embed(title=f"🤝 {nev}", description=(szoveg or "")[:4000], color=ZOLD, timestamp=most())
+        e.add_field(name="👥 Tagok", value=tagszam_szoveg(tagszam))
+        e.add_field(name="✅ Jóváhagyta", value=manager.mention)
+        e.add_field(name="📩 Kérelmező", value=f"<@{kerelmezo_id}>")
+        e.set_footer(text="Partnerség")
+        link = discord.ui.View()
+        link.add_item(discord.ui.Button(label="Csatlakozás", emoji="🔗", url=f"https://discord.gg/{kod}"))
+        tartalom, engedely = ping_tartalom(ping)  # a ping az üzenet szövegében van, az embeden kívül
+        try:
+            await csatorna.send(tartalom, embed=e, view=link, allowed_mentions=engedely)
+        except discord.HTTPException:
+            return f"Nem tudok üzenetet küldeni a(z) #{csatorna.name} csatornába."
+        return None
+
+    async def kezi_hozzaadas(self, g: discord.Guild, manager, nev, tagok, link, szoveg, ping: str = "auto", kerelmezo=None) -> str | None:
+        """Partner felvétele kézzel (Discord-panelről vagy a dashboardról), ticket nélkül. Hibánál az olvasható szöveg, különben None.
+
+        ping: "auto" (a tagszám szintje alapján), "nincs", "everyone", "here" vagy "rang:<azonosító>".
+        """
+        nev, szoveg = (nev or "").strip(), (szoveg or "").strip()
+        if not nev or len(nev) > 100:
+            return "Add meg a szerver nevét (legfeljebb 100 karakter)."
+        tagszam = tagszam_beolvas(tagok)
+        if tagszam is None:
+            return "A tagszám 1 és 10 000 000 közötti egész szám legyen."
+        kodok = meghivo_kodok(link or "")
+        if len(kodok) != 1:
+            return "Pontosan egy Discord-meghívó linket adj meg."
+        if not szoveg or len(szoveg) > 4000:
+            return "Add meg a partnerszöveget (legfeljebb 4000 karakter)."
+        if ping == "auto":
+            ping = await self.javasolt_ping(g.id, tagszam)
+        elif ping == "nincs":
+            ping = ""
+        elif ping not in ("", "everyone", "here") and not (ping.startswith("rang:") and ping[5:].isdigit() and g.get_role(int(ping[5:]))):
+            return "Érvénytelen ping."
+        csatorna = await csatorna_kap(self.bot, g, "partner_csatorna")
+        if csatorna is None:
+            return "Nincs beállítva a partnerek csatornája."
+        talalat = re.search(r"\d{15,22}", str(kerelmezo or ""))
+        kerelmezo_id = int(talalat.group()) if talalat else manager.id
+        if hiba := await self.kozzetesz(g, csatorna, nev, szoveg, kodok[0], tagszam, ping, manager, kerelmezo_id):
+            return hiba
+        # Felvesszük az elfogadott partnerek közé, így a 3 hónapos ellenőrzés is számol vele.
+        await self.bot.db.execute(
+            "INSERT INTO partnersegek (guild_id, csatorna_id, user_id, statusz, partner_nev, partner_szoveg, invite_kod, tagszam, ping, "
+            "manager_id, letrehozva, dontes_ido) VALUES (?, 0, ?, 'elfogadva', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (g.id, kerelmezo_id, nev, szoveg, kodok[0], tagszam, ping, manager.id, ts(), ts()))
+        log_embed = discord.Embed(title="Partner kézzel felvéve", color=ZOLD, timestamp=most())
+        log_embed.add_field(name="Szerver", value=f"{nev} ({tagszam_szoveg(tagszam)} tag)")
+        log_embed.add_field(name="Felvette", value=manager.mention)
+        await naplo(self.bot, g, log_embed)
+        return None
+
+    async def ping_opciok(self, g: discord.Guild) -> list[tuple[str, str]]:
+        """A kézi hozzáadás ping-választéka: automatikus, nincs, @everyone, @here és a szintekben használt rangok."""
+        opciok = [("auto", "Automatikus (tagszám alapján)"), ("nincs", "Nincs ping"), ("everyone", "@everyone"), ("here", "@here")]
+        for sor in await self.bot.db.fetchall("SELECT DISTINCT ping FROM partner_szintek WHERE guild_id=? AND ping LIKE 'rang:%'", (g.id,)):
+            if sor["ping"][5:].isdigit() and g.get_role(int(sor["ping"][5:])):
+                opciok.append((sor["ping"], f"Rang: {ping_cimke(g, sor['ping'])}"))
+        return opciok[:25]
+
+    async def uj_panel_nyit(self, i: discord.Interaction) -> None:
+        if not await self.manager_e(i.user):
+            return await i.response.send_message("❌ Ezt csak a Partner Managerek tehetik meg.", ephemeral=True)
+        nezet = UjPartnerNezet(self, i.user, await self.ping_opciok(i.guild))
+        await i.response.send_message(embed=await nezet.embed(i.guild), view=nezet, ephemeral=True)
+
+    async def panel_kihelyez(self, csatorna: discord.TextChannel) -> str | None:
+        """A „Partner hozzáadása” gomb kihelyezése egy csatornába (újraindítás után is működik). Hibánál az olvasható szöveg."""
+        e = discord.Embed(
+            title="🤝 Partner hozzáadása",
+            description="Partner Managereknek: a gombbal kézzel vehettek fel új partnert (név, tagszám, meghívó, partnerszöveg és ping megadásával), ticket nélkül.",
+            color=KEK)
+        nezet = discord.ui.View(timeout=None)
+        nezet.add_item(PartnerGomb("uj", 0))
+        try:
+            await csatorna.send(embed=e, view=nezet)
+        except discord.HTTPException:
+            return f"Nem tudok üzenetet küldeni a(z) #{csatorna.name} csatornába."
+        return None
+
     # ------------------------------------------------------------------ telepítés (parancs és dashboard)
     async def telepit(self, g: discord.Guild) -> str:
         """A Partnerség ticket-típus létrehozása (vagy bekapcsolása) és a panel frissítése. Az eredmény olvasható szöveg."""
@@ -542,6 +705,21 @@ class Partner(commands.Cog):
         name="partner", description="A partnerségi rendszer beállításai.", guild_only=True,
         default_permissions=discord.Permissions(administrator=True),
     )
+
+    partnership = app_commands.Group(name="partnership", description="Partner kézi hozzáadása.", guild_only=True)
+
+    @partnership.command(name="add", description="Új partner felvétele kézzel: panel az összes adattal.")
+    async def partnership_add(self, i: discord.Interaction):
+        await self.uj_panel_nyit(i)
+
+    @partnership.command(name="panel", description="Kihelyezhető gomb, amivel a Partner Managerek megnyithatják a hozzáadó panelt.")
+    @app_commands.describe(csatorna="Ide kerül a gomb (alapértelmezés: ez a csatorna)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def partnership_panel(self, i: discord.Interaction, csatorna: discord.TextChannel | None = None):
+        csatorna = csatorna or i.channel
+        if hiba := await self.panel_kihelyez(csatorna):
+            return await i.response.send_message(f"❌ {hiba}", ephemeral=True)
+        await i.response.send_message(f"✅ A gomb kikerült ide: {csatorna.mention}", ephemeral=True)
 
     @partner.command(name="telepites", description="A Partnerség ticket-típus létrehozása, és a ticket panel frissítése.")
     @app_commands.checks.has_permissions(administrator=True)
